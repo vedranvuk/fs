@@ -28,7 +28,11 @@ func TestFs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// fs.Get("test3", true).Delete()
+	file, err := fs.Get("test3", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Delete()
 
 	if err := fs.Flush(true, true); err != nil {
 		t.Fatal(err)

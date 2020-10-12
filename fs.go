@@ -103,6 +103,27 @@ func (f *File) Fs() *Fs {
 	}
 }
 
+// children is the implementation of Children.
+func (f *File) children(depth, curr int, absolute bool, result *[]string) {
+	if depth >= 0 && curr > depth {
+		return
+	}
+	for _, file := range f.files {
+		*result = append(*result, file.Path(absolute))
+		file.children(depth, curr+1, absolute, result)
+	}
+}
+
+// Children returns this File's children up to specified depth where 0 is the
+// direct children of file. A negative depth imposes no limit.
+// If absolute is specified returns absolute paths, otherwise relative to root.
+func (f *File) Children(depth int, absolute bool) []string {
+	var result []string
+	f.children(depth, 0, absolute, &result)
+	sort.Strings(result)
+	return result
+}
+
 // makeFile creates a file in self which must be a directory.
 // If this File is not a directory an ErrParentNotDir is returned.
 func (f *File) makeFile(name string, directory bool) (*File, error) {
@@ -252,16 +273,16 @@ func (f *File) Delete() {
 // Mirror mirrors the file to a target Fs at the same relative path.
 //
 // If File is a directory the directory is created in the target Fs. If it has
-// children, they are copied as well. If File is a file it is copied to target.
-// In all cases, directories along the path to the File are created in the
-// target Fs.
+// children and children is true, they are copied as well. If File is a file it
+// is copied to target. In all cases, directories along the path to the File
+// are created in the target Fs.
 //
 // If the target Fs has an existing structure that differs from the source in
 // that the target has existing files coresponding to paths of files being
 // mirrored but are of different type (i.e. file/dir) an error is returned.
 //
 // If any other error occurs it is returned.
-func (f *File) Mirror(target *Fs, overwrite bool) error {
+func (f *File) Mirror(target *Fs, overwrite, children bool) error {
 
 	tgtfile, err := target.Get(f.Path(false), f.IsDir())
 	if err != nil {
@@ -271,25 +292,29 @@ func (f *File) Mirror(target *Fs, overwrite bool) error {
 		return err
 	}
 
-	infile, err := os.OpenFile(f.Path(true), os.O_RDONLY, os.ModePerm)
-	if err != nil {
-		return err
-	}
-	defer infile.Close()
-
-	outfile, err := os.OpenFile(tgtfile.Path(true), os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	defer outfile.Close()
-
-	if _, err := io.Copy(outfile, infile); err != nil {
-		return err
-	}
-
-	for _, file := range f.files {
-		if err := file.Mirror(target, overwrite); err != nil {
+	if !f.IsDir() {
+		infile, err := os.OpenFile(f.Path(true), os.O_RDONLY, os.ModePerm)
+		if err != nil {
 			return err
+		}
+		defer infile.Close()
+
+		outfile, err := os.OpenFile(tgtfile.Path(true), os.O_WRONLY|os.O_TRUNC, 0644)
+		if err != nil {
+			return err
+		}
+		defer outfile.Close()
+
+		if _, err := io.Copy(outfile, infile); err != nil {
+			return err
+		}
+	}
+
+	if children {
+		for _, file := range f.files {
+			if err := file.Mirror(target, overwrite, children); err != nil {
+				return err
+			}
 		}
 	}
 

@@ -22,6 +22,9 @@ func TestFs(t *testing.T) {
 	fs.Get("/test3/file2", false)
 	fs.Get("/test3/file3", true)
 
+	fmt.Println(fs.Children(-1, false))
+	fmt.Println(fs.Children(-1, true))
+
 	fmt.Println(fs)
 
 	if err := fs.Flush(true, false); err != nil {
@@ -78,11 +81,11 @@ func TestMirror(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f, err = oldfs.Get("/dir1/file2", false)
+	f, err = oldfs.Get("/dir1", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Mirror(newfs, true); err != nil {
+	if err := f.Mirror(newfs, true, true); err != nil {
 		t.Fatal(err)
 	}
 

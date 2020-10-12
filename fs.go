@@ -1,7 +1,6 @@
 package fs
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -14,10 +13,10 @@ import (
 )
 
 var (
-	// ErrParentNotDir is returned when a child file is added to a file that is
-	// not a directory.
+	// ErrParentNotDir is returned when a child file is being added to a file
+	// that is not a directory.
 	ErrParentNotDir = errors.New("fs: parent is not a directory")
-	// ErrInvalidName is returned when an invalid name is specified.
+	// ErrInvalidName is returned when an invalid or empty name is specified.
 	ErrInvalidName = errors.New("fs: invalid name")
 	// ErrIncompatibleStructure is returned when mirroring a file to a different Fs
 	// that already has a structure which is incompatible with source Fs structure.
@@ -284,23 +283,7 @@ func (f *File) Mirror(target *Fs, overwrite bool) error {
 	}
 	defer outfile.Close()
 
-	buf := make([]byte, 4096)
-	reader := bufio.NewReader(infile)
-	writer := bufio.NewWriter(outfile)
-
-	for loop := true; loop; {
-		n, err := reader.Read(buf)
-		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				return err
-			}
-			loop = false
-		}
-		if _, err = writer.Write(buf[:n]); err != nil {
-			return err
-		}
-	}
-	if err := writer.Flush(); err != nil {
+	if _, err := io.Copy(outfile, infile); err != nil {
 		return err
 	}
 
@@ -400,6 +383,11 @@ func (fs *Fs) Parse() error {
 	if fs.root == "" {
 		return ErrRootNotSet
 	}
+	abs, err := filepath.Abs(fs.root)
+	if err != nil {
+		return err
+	}
+	fs.abs = abs
 	if _, err := os.Stat(fs.abs); err != nil {
 		return err
 	}
@@ -407,11 +395,12 @@ func (fs *Fs) Parse() error {
 	return fs.parse(&fs.File, fs.abs)
 }
 
-func indentString(depth int) (s string) {
+func indentString(depth int) string {
+	b := make([]byte, 0, depth)
 	for i := 0; i < depth; i++ {
-		s += "  "
+		b = append(b, ' ')
 	}
-	return s
+	return string(b)
 }
 
 func printFiles(f files, indent int) (result string) {
@@ -444,7 +433,8 @@ func (fs *Fs) String() string { return printFiles(fs.files, 0) }
 // If remove is specified removes files from disk that were deleted
 // from Fs since the last call to Flush.
 //
-// If operation fails mid flight, files created up until error are not removed.
+// If operation fails mid flight, any files created up to error
+// are not removed.
 func (fs *Fs) Flush(overwrite, remove bool) (err error) {
 
 	defer func() {
@@ -457,6 +447,9 @@ func (fs *Fs) Flush(overwrite, remove bool) (err error) {
 		}
 		return true
 	})
+	if err != nil {
+		return
+	}
 
 	if remove {
 		flist := make([]string, 0, len(fs.removelist))

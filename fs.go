@@ -287,6 +287,12 @@ func (f *File) Mirror(target *Fs, overwrite bool) error {
 		return err
 	}
 
+	for _, file := range f.files {
+		if err := file.Mirror(target, overwrite); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 

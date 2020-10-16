@@ -13,6 +13,18 @@ import (
 )
 
 var (
+	// ErrDirNotEmpty is returned when a Directory Descriptor that contains
+	// children is being removed and a recursive operation was not requested.
+	ErrDirNotEmpty = errors.New("fs: cannot remove directory descriptor, contains children")
+	// ErrInvalidPath is returned when an invalid path is specified.
+	// Invalid path in fs is a path that specifies an element in a path
+	// that is a File instead of a Directory.
+	ErrInvalidPath = errors.New("fs: invalid path")
+	// ErrRootParentTraversal is returned whan specifying a path towards the
+	// parent directory of a Fs root.
+	ErrRootParentTraversal = errors.New("fs: traversing to root parent")
+	// ErrExists is returned when a Descriptor with the same name already exists.
+	ErrExists = errors.New("fs: descriptor exists")
 	// ErrParentNotDir is returned when a child file is being added to a file
 	// that is not a directory.
 	ErrParentNotDir = errors.New("fs: parent is not a directory")
@@ -29,185 +41,141 @@ var (
 	ErrRootNotSet = errors.New("fs: root not set")
 )
 
-// files is a managed map of files.
-type files map[string]*File
+// descriptorMap is a map of descriptor names to descriptor instances.
+// It implements several methods for common operations.
+type descriptorMap map[string]*Descriptor
 
-// file returns an existing or creates a new file under
-// specified name if one does not already exist.
+// get always returns a descriptor under specified name and true if it returned
+// an existing descriptor or false if it created a new one.
 //
-// When returning a new file its' parrent is set to specified parent.
-func (f files) file(parent interface{}, name string, dir bool) *File {
-	file, ok := f[name]
+// If descriptor did not exist it will be created under specified name, under
+// specified parent and it will be a dir if dir was true.
+func (dm descriptorMap) get(name string, parent interface{}, dir bool) (*Descriptor, bool) {
+	file, ok := dm[name]
 	if !ok {
-		file = newFile(name, parent, dir)
-		f[name] = file
-		return file
+		file = newDescriptor(name, parent, dir)
+		dm[name] = file
+		return file, false
 	}
-	return file
+	return file, true
 }
 
-// delete deletes a *File from files by specified name.
-func (f files) delete(name string) { delete(f, name) }
+// delete deletes a *Descriptor from descriptorMap by specified name.
+func (dm descriptorMap) delete(name string) { delete(dm, name) }
 
-// File defines a file.
-type File struct {
-	name   string                 // name is the name of the file.
-	parent interface{}            // parent is the reference to file's parent which can be a *File or an *Fs.
-	dir    bool                   // Directory specifies if this file is a directory.
-	meta   map[string]interface{} // meta is file metadata, user storage, anything.
-	files                         // files is a map of contained file names to Files if this is a Directory.
+// len returns count of entries in the descriptorMap.
+func (dm descriptorMap) len() int { return len(dm) }
+
+// validateDescriptorName validates a Descriptor returning ErrInvalidName if
+// the specified name is empty or invalid because it contains reserved or
+// invalid characters.
+func validateDescriptorName(name string) error {
+	return nil
 }
 
-// newFile returns a new *File instance.
-func newFile(name string, parent interface{}, dir bool) *File {
-	return &File{name: name, parent: parent, dir: dir, files: make(files)}
+// Descriptor defines a file descriptor which can represent both a file
+// and a directory. Once a Descriptor is created its' type (file/directory)
+// cannot be changed.
+//
+// Issuing directory related operations on a Descriptor which is a File
+// instead of a Directory will usually return errors.
+type Descriptor struct {
+	// name is the name of the Descriptor.
+	// Descriptors are kept in a descriptorMap and names of Descriptors in a
+	// descriptorMap are unique and case-sensitive.
+	name string
+	// parent is the reference to Descriptor's parent which can be
+	// either another *Descriptor or a *Fs if this Descriptor is the
+	// root directory in a *Fs instance.
+	parent interface{}
+	// dir specifies if this Descriptor is a directory.
+	dir bool
+	// meta is the Descriptor metadata, provided for user storage.
+	meta map[string]interface{}
+	// descriptorMap is a map of contained Descriptors if this
+	// Descriptor is a Directory.
+	descriptorMap
 }
 
-// Name returns File's name.
-func (f *File) Name() string { return f.name }
+// newDescriptor returns a new *Descriptor instance.
+func newDescriptor(name string, parent interface{}, dir bool) *Descriptor {
+	return &Descriptor{name: name, parent: parent, dir: dir, descriptorMap: make(descriptorMap)}
+}
 
-// Parent returns this File's parent.
-// If there is no parent, i.e. this file represents the root directory
-// in a Fs a nil file is returned.
-func (f *File) Parent() *File {
-	if file, ok := f.parent.(*File); ok {
+// newChild creates a child Descriptor in self which must be a Directory.
+// If this Descriptor is not a Directory an ErrParentNotDir is returned.
+//
+// If a Descriptor under specified name already exists it is returned along
+// with ErrExists.
+//
+// If an invalid name is specified returns a nil *Descriptor and ErrInvalidName.
+//
+// Directory specifies if the Descriptor should be created as a Directory.
+func (d *Descriptor) newChild(name string, directory bool) (*Descriptor, error) {
+
+	if err := validateDescriptorName(name); err != nil {
+		return nil, ErrInvalidName
+	}
+
+	file, existed := d.get(name, d, directory)
+	if !d.dir {
+		return nil, ErrParentNotDir
+	}
+
+	fs := d.Fs()
+	path := file.Path(false)
+	if _, exists := fs.removeList[path]; exists {
+		delete(fs.removeList, path)
+	}
+
+	if existed {
+		return file, ErrExists
+	}
+	return file, nil
+}
+
+// NewDirectory creates a new Directory Descriptor inside this Descriptor.
+// See newChild for details.
+func (d *Descriptor) NewDirectory(name string) (*Descriptor, error) { return d.newChild(name, true) }
+
+// NewFile creates a new File Descriptor inside this Descriptor.
+// See newChild for details.
+func (d *Descriptor) NewFile(name string) (*Descriptor, error) { return d.newChild(name, false) }
+
+// Name returns Descriptor's name.
+func (d *Descriptor) Name() string { return d.name }
+
+// Parent returns this Descriptor's parent *Descriptor.
+// If there is no parent, i.e. this Descriptor represents the root Directory
+// in a Fs a nil Descriptor is returned.
+func (d *Descriptor) Parent() *Descriptor {
+	if file, ok := d.parent.(*Descriptor); ok {
 		return file
 	}
 	return nil
 }
 
-// Fs returns the Fs this File belongs to.
-func (f *File) Fs() *Fs {
-	curr := f.parent
+// Fs returns the Fs this Descriptor belongs to.
+func (d *Descriptor) Fs() *Fs {
+	curr := d.parent
 	for {
 		if fs, ok := curr.(*Fs); ok {
 			return fs
 		}
-		if file, ok := curr.(*File); ok {
+		if file, ok := curr.(*Descriptor); ok {
 			curr = file.parent
-		} else {
-			panic("bug")
+			continue
 		}
+		panic("fs: bug: cannot find Descriptor's Fs")
 	}
 }
 
-// IsDir returns if this file is marked as a directory.
-func (f *File) IsDir() bool { return f.dir }
-
-// GetMeta returns user set meta information by specified key.s
-func (f *File) GetMeta(key string) interface{} { return f.meta[key] }
-
-// SetMeta sets user meta information val under specified key.
-func (f *File) SetMeta(key string, val interface{}) { f.meta[key] = val }
-
-// Count returns child item count.
-func (f *File) Count() int { return len(f.files) }
-
-// Files returns files contained by this file if it is a directory.
-// Otherwise, always returns an empty slice.
-func (f *File) Files() []*File {
-	res := make([]*File, 0, len(f.files))
-	for _, file := range f.files {
-		if !file.IsDir() {
-			res = append(res, file)
-		}
-	}
-	sort.Slice(res, func(i, j int) bool {
-		return res[i].Name() < res[j].Name()
-	})
-	return res
-}
-
-// FileNames returns names of files contained by this file if it is a directory.
-// Otherwise, always returns an empty slice.
-func (f *File) FileNames() []string {
-	res := make([]string, 0, len(f.files))
-	for _, file := range f.files {
-		if !file.IsDir() {
-			res = append(res, file.Name())
-		}
-	}
-	sort.Strings(res)
-	return res
-}
-
-// Dirs returns directories contained by this file if it is a directory.
-// Otherwise, always returns an empty slice.
-func (f *File) Dirs() []*File {
-	res := make([]*File, 0, len(f.files))
-	for _, file := range f.files {
-		if file.IsDir() {
-			res = append(res, file)
-		}
-	}
-	sort.Slice(res, func(i, j int) bool {
-		return res[i].Name() < res[j].Name()
-	})
-	return res
-}
-
-// DirNames returns names of dirs contained by this file if it is a directory.
-// Otherwise, always returns an empty slice.
-func (f *File) DirNames() []string {
-	res := make([]string, 0, len(f.files))
-	for _, file := range f.files {
-		if file.IsDir() {
-			res = append(res, file.Name())
-		}
-	}
-	sort.Strings(res)
-	return res
-}
-
-// children is the implementation of Children.
-func (f *File) children(depth, curr int, absolute bool, result *[]string) {
-	if depth >= 0 && curr > depth {
-		return
-	}
-	for _, file := range f.files {
-		*result = append(*result, file.Path(absolute))
-		file.children(depth, curr+1, absolute, result)
-	}
-}
-
-// Children returns this File's children up to specified depth where 0 is the
-// direct children of file. A negative depth imposes no limit.
-// If absolute is specified returns absolute paths, otherwise relative to root.
-func (f *File) Children(depth int, absolute bool) []string {
-	var result []string
-	f.children(depth, 0, absolute, &result)
-	sort.Strings(result)
-	return result
-}
-
-// makeFile creates a file in self which must be a directory.
-// If this File is not a directory an ErrParentNotDir is returned.
-func (f *File) makeFile(name string, directory bool) (*File, error) {
-
-	file := f.file(f, name, directory)
-	if !f.dir {
-		return nil, ErrParentNotDir
-	}
-
-	fs := f.Fs()
-	path := file.Path(false)
-	if _, exists := fs.removelist[path]; exists {
-		delete(fs.removelist, path)
-	}
-
-	return file, nil
-}
-
-// NewDir creates a new directory inside this file. See makeFile.
-func (f *File) NewDir(name string) (*File, error) { return f.makeFile(name, true) }
-
-// NewFile creates a new file inside this file, see makeFile.
-func (f *File) NewFile(name string) (*File, error) { return f.makeFile(name, false) }
-
-// leftPathElem returns the first element of the path and the rest.
+// leftPathElem is a helper to Get that returns the first (leftmost) element
+// of the path and the rest.
+//
 // If s is empty returns empty dir and empty rest.
-// If s begins with a slash returns empty dir and everything as else.
-// It is a helper for Get.
+// If s begins with a slash returns empty dir and everything as else, minus its'
+// leading frontslash.
 func leftPathElem(s string) (dir, rest string) {
 	s = strings.TrimSpace(s)
 	i := strings.Index(s, "/")
@@ -220,52 +188,182 @@ func leftPathElem(s string) (dir, rest string) {
 	return s[:i], s[i+1:]
 }
 
-// Get returns a file by name where name can be a name of a file in this
-// directory, a path to a file in a subdirectory or a rooted path which
-// gets evaluated from Fs root directory.
+// Get returns a Descriptor by specified name where name can be a name of a
+// Descriptor in this Directory Descriptor, a path relative to this Descriptor
+// or a rooted path that is rooted at the root directory of the Fs that manages
+// this Descriptor.
 //
-// If directory is true and the files along the path do not exist, the last
-// element of the path will be created as a directory instead of a file.
+// If directory is true and the Descriptor specified by name needs to be
+// created, it is created as a Directory instead of a File.
 //
-// Get can return an os.ErrNotExists if an invalid path is specified.
-// An invalid path can result only if an element of the specified path
-// already exists in the Fs and is a file instead of a directory.
+// Returns ErrInvalidName if name is empty or invalid.
 //
-// Get returns ErrInvalidName if name is empty or invalid.
-func (f *File) Get(name string, directory bool) (*File, error) {
+// Returns an ErrInvalidPath if an element of the path specified by name
+// already exists in the Fs, is a File instead of a Directory and does not
+// have children.
+//
+// Returns ErrRootParentTraversal if name specifies a path that leads to a
+// directory outside of Fs' root directory.
+//
+// If Get returns an error and a non-nil Descriptor, the Descriptor should be
+// used exclusively for purposes of examining the error and will be a
+// Descriptor that caused the error.
+func (d *Descriptor) Get(name string, directory bool) (*Descriptor, error) {
+
+	if err := validateDescriptorName(name); err != nil {
+		return nil, ErrInvalidName
+	}
+
 	dir, rest := leftPathElem(name)
+
+	// Redirrect rooted paths to Fs root.
 	if dir == "" {
 		if rest == "" {
 			return nil, ErrInvalidName
 		}
-		return f.Fs().Get(rest, directory)
+		return d.Fs().Get(rest, directory)
 	}
+
+	// Handle dot-names.
+	switch dir {
+	case ".":
+		return d.Get(rest, directory)
+	case "..":
+		if parent := d.Parent(); parent != nil {
+			return parent.Get(rest, directory)
+		}
+		return nil, ErrRootParentTraversal
+	}
+
+	if !d.IsDirectory() {
+		return d, ErrInvalidPath
+	}
+
+	desc, _ := d.get(dir, d, directory)
 	if rest != "" {
-		return f.file(f, dir, true).Get(rest, directory)
+		return desc.Get(rest, directory)
 	}
-	return f.file(f, dir, directory), nil
+	return desc, nil
 }
 
-// Path returns the path to this file, including the File name. If absolute is
-// specified it returns an absolute path to the file, otherwise a path relative
-// to the Fs root directory.
-func (f *File) Path(absolute bool) string {
-	if file, ok := f.parent.(*File); ok {
-		return path.Join(file.Path(absolute), f.name)
-	}
-	if fs, ok := f.parent.(*Fs); ok {
-		if absolute {
-			return filepath.Join(fs.abs, f.name)
+// IsDirectory returns if this Descriptor is a Directory.
+func (d *Descriptor) IsDirectory() bool { return d.dir }
+
+// GetMeta returns meta information by specified key.
+func (d *Descriptor) GetMeta(key string) interface{} { return d.meta[key] }
+
+// SetMeta sets meta information val under specified key.
+func (d *Descriptor) SetMeta(key string, val interface{}) { d.meta[key] = val }
+
+// Count returns this Descriptor's child Descriptor count.
+func (d *Descriptor) Count() int { return len(d.descriptorMap) }
+
+// Files returns files contained by this Descriptor if it is a Directory.
+// Otherwise, always returns an empty slice.
+func (d *Descriptor) Files() []*Descriptor {
+	res := make([]*Descriptor, 0, len(d.descriptorMap))
+	for _, file := range d.descriptorMap {
+		if !file.IsDirectory() {
+			res = append(res, file)
 		}
-		return "/" + f.name
+	}
+	sort.Slice(res, func(i, j int) bool {
+		return res[i].Name() < res[j].Name()
+	})
+	return res
+}
+
+// FileNames returns names of files contained by this Descriptor if it is a
+// directory. Otherwise, always returns an empty slice.
+func (d *Descriptor) FileNames(namesonly, absolute bool) []string {
+	res := make([]string, 0, len(d.descriptorMap))
+	for _, file := range d.descriptorMap {
+		if !file.IsDirectory() {
+			if namesonly {
+				res = append(res, file.Name())
+			} else {
+				res = append(res, file.Path(absolute))
+			}
+		}
+	}
+	sort.Strings(res)
+	return res
+}
+
+// Directories returns Directories contained by this Descriptor if it is a
+// directory. Otherwise, always returns an empty slice.
+func (d *Descriptor) Directories() []*Descriptor {
+	res := make([]*Descriptor, 0, len(d.descriptorMap))
+	for _, file := range d.descriptorMap {
+		if file.IsDirectory() {
+			res = append(res, file)
+		}
+	}
+	sort.Slice(res, func(i, j int) bool {
+		return res[i].Name() < res[j].Name()
+	})
+	return res
+}
+
+// DirectoryNames returns names of Directories contained by this Descriptor if
+// it is a directory. Otherwise, always returns an empty slice.
+func (d *Descriptor) DirectoryNames(namesonly, absolute bool) []string {
+	res := make([]string, 0, len(d.descriptorMap))
+	for _, file := range d.descriptorMap {
+		if file.IsDirectory() {
+			if namesonly {
+				res = append(res, file.Name())
+			} else {
+				res = append(res, file.Path(absolute))
+			}
+		}
+	}
+	sort.Strings(res)
+	return res
+}
+
+// children is the implementation of Children.
+func (d *Descriptor) children(depth, curr int, absolute bool, result *[]string) {
+	if depth >= 0 && curr > depth {
+		return
+	}
+	for _, file := range d.descriptorMap {
+		*result = append(*result, file.Path(absolute))
+		file.children(depth, curr+1, absolute, result)
+	}
+}
+
+// Children returns this Descriptor's children up to specified depth where 0 is
+// the direct children of thr Descriptor. A negative depth imposes no limit.
+// If absolute is specified returns absolute paths, otherwise relative to root.
+func (d *Descriptor) Children(depth int, absolute bool) []string {
+	var result []string
+	d.children(depth, 0, absolute, &result)
+	sort.Strings(result)
+	return result
+}
+
+// Path returns the path to this Descriptor, including the Descriptor name. If
+// absolute is specified it returns an absolute path to the Descriptor,
+// otherwise a path relative to the Fs root directory.
+func (d *Descriptor) Path(absolute bool) string {
+	if file, ok := d.parent.(*Descriptor); ok {
+		return path.Join(file.Path(absolute), d.name)
+	}
+	if fs, ok := d.parent.(*Fs); ok {
+		if absolute {
+			return filepath.Join(fs.abs, d.name)
+		}
+		return "/" + d.name
 	}
 	return ""
 }
 
-// Exists checks if the file exists on disk.
+// Exists checks if the Descriptor exists on disk and returns the truth and a
+// nil error on success.
 // If an error occurs it is returned with an invalid value of file's existence.
-func (f *File) Exists() (bool, error) {
-	_, err := os.Stat(f.Path(true))
+func (d *Descriptor) Exists() (bool, error) {
+	_, err := os.Stat(d.Path(true))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
@@ -275,15 +373,15 @@ func (f *File) Exists() (bool, error) {
 	return true, nil
 }
 
-// Touch creates this file on disk and returns nil on success.
-// It creates an empty file or an empty directory, depending.
+// Touch creates this Descriptor on disk and returns nil on success.
+// It creates an empty File or an empty Directory, depending on descriptor type.
 // All directories along the path are created.
-// If overwrite is specified, silently overwrites the file, otherwise
-// returns an ErrExists. ANy other error is returned and the op may have
+// If overwrite is specified, silently overwrites the Descriptor, otherwise
+// returns an os.ErrExists. Any other error is returned and the op may have
 // completed partially.
-func (f *File) Touch(overwrite bool) error {
-	p := f.Path(true)
-	if f.dir {
+func (d *Descriptor) Touch(overwrite bool) error {
+	p := d.Path(true)
+	if d.dir {
 		if err := os.MkdirAll(p, 0755); err != nil {
 			return err
 		}
@@ -303,44 +401,61 @@ func (f *File) Touch(overwrite bool) error {
 	return file.Close()
 }
 
-// Remove deletes this file from disk.
-// It does so recursively if it is a directory.
+// Remove deletes this Descriptor from disk. It does so recursively if the
+// Descriptor is a directory and recursive is specified.
 // Returns os.ErrNotExists if file did not exist on disk prior to the call.
 // Returns any other error if one occurs.
-func (f *File) Remove() error {
-	if fs, ok := f.parent.(*Fs); ok {
-		fs.File = *newFile("/", fs, true)
-		return os.RemoveAll(fs.abs)
+func (d *Descriptor) Remove(recursive bool) error {
+	if fs, ok := d.parent.(*Fs); ok {
+		fs.Descriptor = *newDescriptor("/", fs, true)
+		if recursive {
+			return os.RemoveAll(fs.abs)
+		}
+		return os.Remove(fs.abs)
 	}
-	return os.Remove(f.Path(true))
+	if recursive {
+		return os.RemoveAll(d.Path(true))
+	}
+	return os.Remove(d.Path(true))
 }
 
-// Delete deletes this file from its' parent.
-func (f *File) Delete() {
-	if file, ok := f.parent.(*File); ok {
-		file.delete(f.name)
+// Delete deletes this Descriptor from its' parent. If Descriptor is a
+// Directory and recursive is specified it removes Descriptors recursively,
+// otherwise returns an error if Descriptor contains children.
+func (d *Descriptor) Delete(recursive bool) error {
+	if file, ok := d.parent.(*Descriptor); ok {
+		if file.Count() > 0 && !recursive {
+			return ErrDirNotEmpty
+		}
+		file.delete(d.name)
 	}
-	if fs, ok := f.parent.(*Fs); ok {
-		fs.delete(f.name)
+	if fs, ok := d.parent.(*Fs); ok {
+		if fs.Count() > 0 && !recursive {
+			return ErrDirNotEmpty
+		}
+		fs.delete(d.name)
 	}
-	f.Fs().removelist[f.Path(false)] = f
+	d.Fs().removeList[d.Path(false)] = d
+	// TODO Fill removelist with child items.
+	return nil
 }
 
-// Mirror mirrors the file to a target Fs at the same relative path.
+// Mirror mirrors the Descriptor to a target Fs at the same relative path.
 //
-// If File is a directory the directory is created in the target Fs. If it has
-// children and children is true, they are copied as well. If File is a file it
-// is copied to target. In all cases, directories along the path to the File
-// are created in the target Fs.
+// If Descriptor is a Directory the directory is created in the target Fs. If
+// it has children and children is true, they are copied as well. If Descriptor
+// is a File it is copied to target. In all cases, directories along the path
+// to the Descriptor are created in the target Fs.
 //
 // If the target Fs has an existing structure that differs from the source in
-// that the target has existing files coresponding to paths of files being
-// mirrored but are of different type (i.e. file/dir) an error is returned.
+// that the target has existing Descriptors coresponding to paths of Descriptors
+// being mirrored but are of different type (i.e. File vs Directory) an
+// ErrIncompatibleStructure is returned.
 //
 // If any other error occurs it is returned.
-func (f *File) Mirror(target *Fs, overwrite, children bool) error {
+func (d *Descriptor) Mirror(target *Fs, overwrite, children bool) error {
 
-	tgtfile, err := target.Get(f.Path(false), f.IsDir())
+	tgtfile, err := target.Get(d.Path(false), d.IsDirectory())
 	if err != nil {
 		return err
 	}
@@ -348,8 +463,8 @@ func (f *File) Mirror(target *Fs, overwrite, children bool) error {
 		return err
 	}
 
-	if !f.IsDir() {
-		infile, err := os.OpenFile(f.Path(true), os.O_RDONLY, os.ModePerm)
+	if !d.IsDirectory() {
+		infile, err := os.OpenFile(d.Path(true), os.O_RDONLY, os.ModePerm)
 		if err != nil {
 			return err
 		}
@@ -367,7 +482,7 @@ func (f *File) Mirror(target *Fs, overwrite, children bool) error {
 	}
 
 	if children {
-		for _, file := range f.files {
+		for _, file := range d.descriptorMap {
 			if err := file.Mirror(target, overwrite, children); err != nil {
 				return err
 			}
@@ -383,52 +498,67 @@ type ReadWriteSeekCloser interface {
 	io.ReadWriteCloser
 }
 
-// Open opens an underlying file in read/write mode if it is not a directory.
-// If the file does not yet exist it is created.
-// If truncate is specified, file is cleared on open.
+// Open opens an underlying Descriptor in read/write mode if it is a File.
+// If the File does not yet exist on disk it is created.
+// If truncate is specified, File is cleared on open.
 // If an error occurs it is returned.
-func (f *File) Open(truncate bool) (ReadWriteSeekCloser, error) {
-	if f.IsDir() {
+//
+// Caller is responsible for closing the returned ReadWriteSeekCloser.
+func (d *Descriptor) Open(truncate bool) (ReadWriteSeekCloser, error) {
+	if d.IsDirectory() {
 		return nil, ErrFileIsDirectory
 	}
 	flags := os.O_CREATE | os.O_RDWR
 	if truncate {
 		flags = flags | os.O_TRUNC
 	}
-	file, err := os.OpenFile(f.Path(true), flags, 0644)
+	file, err := os.OpenFile(d.Path(true), flags, 0644)
 	if err != nil {
 		return nil, err
 	}
 	return file, nil
 }
 
-// walkFunc is the Fs traversal function.
-// Passes current *File being examined, returning false stops enumeration.
-type walkFunc func(*File) bool
+// walkFunc is the Descriptor traversal function prototype. It passes current
+// Descriptor being traversed to the WalkFunc which must return true to
+// continue enumeration or false to stop it.
+type walkFunc func(*Descriptor) bool
 
 // Walk walks the files sorted by name in ascending order.
-// It walks the complete tree.
-func (f *File) Walk(fn walkFunc) {
-	names := make([]string, 0, len(f.files))
-	for key := range f.files {
+// It walks the complete tree and does it recursively if recursive is specified.
+func (d *Descriptor) Walk(fn walkFunc, recursive bool) {
+	names := make([]string, 0, len(d.descriptorMap))
+	for key := range d.descriptorMap {
 		names = append(names, key)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		file := f.files[name]
+		file := d.descriptorMap[name]
 		if !fn(file) {
 			break
 		}
-		file.Walk(fn)
+		if recursive {
+			file.Walk(fn, recursive)
+		}
 	}
 }
 
-// Fs defines a reflection of a filesystem rooted at a directory on disk.
+// removeList maps a name of a removed Descriptor to a Descriptor.
+type removeList map[string]*Descriptor
+
+// Fs defines a filesystem rooted at a directory on disk.
+//
+// It embeds a Directory Descriptor that represents the Fs root directory.
 type Fs struct {
-	root       string // root is the root directory where fs will act.
-	abs        string // abs is the absolute path of root.
-	removelist map[string]*File
-	File
+	// root is the root directory which Fs manages.
+	root string
+	// abs is the absolute path of root.
+	abs string
+	// removeList is a list of Descriptors removed from Fs since
+	// last call to Flush.
+	removeList
+	// Descriptor is the DIrectory Descriptor representing Fs root.
+	Descriptor
 }
 
 // Root returns Fs's root folder as set on construction.
@@ -438,16 +568,16 @@ func (fs *Fs) Root() string { return fs.root }
 func (fs *Fs) Abs() string { return fs.abs }
 
 // parse is the implementation of Parse.
-func (fs *Fs) parse(file *File, path string) error {
+func (fs *Fs) parse(file *Descriptor, path string) error {
 	fis, err := ioutil.ReadDir(path)
 	if err != nil {
 		return err
 	}
 	for _, fi := range fis {
-		var f *File
+		var f *Descriptor
 		var err error
 		if fi.IsDir() {
-			f, err = file.NewDir(fi.Name())
+			f, err = file.NewDirectory(fi.Name())
 			if err != nil {
 				return err
 			}
@@ -478,8 +608,8 @@ func (fs *Fs) Parse() error {
 	if _, err := os.Stat(fs.abs); err != nil {
 		return err
 	}
-	fs.files = make(files)
-	return fs.parse(&fs.File, fs.abs)
+	fs.descriptorMap = make(descriptorMap)
+	return fs.parse(&fs.Descriptor, fs.abs)
 }
 
 // indentString builds an indent string for printFiles.
@@ -492,19 +622,17 @@ func indentString(depth int) string {
 }
 
 // filesString returns files as string.
-func filesString(f files, indent int) (result string) {
+func filesString(desc *Descriptor, indent int) (result string) {
 
-	names := make([]string, 0, len(f))
-	for name := range f {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := make([]string, 0, desc.Count())
+	names = append(names, desc.DirectoryNames(true, false)...)
+	names = append(names, desc.FileNames(true, false)...)
 
 	for _, name := range names {
-		result += fmt.Sprintf("%s %s\n", indentString(indent), f[name].Name())
-		if len(f[name].files) > 0 {
+		result += fmt.Sprintf("%s %s\n", indentString(indent), name)
+		if child, ok := desc.descriptorMap[name]; ok {
 			indent++
-			result += filesString(f[name].files, indent)
+			result += filesString(child, indent)
 			indent--
 		}
 	}
@@ -512,7 +640,7 @@ func filesString(f files, indent int) (result string) {
 }
 
 // String implements Stringer.
-func (fs *Fs) String() string { return filesString(fs.files, 0) }
+func (fs *Fs) String() string { return filesString(&fs.Descriptor, 0) }
 
 // Flush commits current Fs structure to disk or returns an error if one
 // occurs. It creates all directories along the path to touched files.
@@ -527,22 +655,22 @@ func (fs *Fs) String() string { return filesString(fs.files, 0) }
 func (fs *Fs) Flush(overwrite, remove bool) (err error) {
 
 	defer func() {
-		fs.removelist = make(map[string]*File)
+		fs.removeList = make(removeList)
 	}()
 
-	fs.Walk(func(file *File) bool {
+	fs.Walk(func(file *Descriptor) bool {
 		if err = file.Touch(overwrite); err != nil {
 			return false
 		}
 		return true
-	})
+	}, true)
 	if err != nil {
 		return
 	}
 
 	if remove {
-		flist := make([]string, 0, len(fs.removelist))
-		for key := range fs.removelist {
+		flist := make([]string, 0, len(fs.removeList))
+		for key := range fs.removeList {
 			flist = append(flist, key)
 		}
 		sort.Strings(flist)
@@ -565,8 +693,8 @@ func newFs(root string) (fs *Fs, err error) {
 	if err != nil {
 		return nil, err
 	}
-	fs = &Fs{root: root, abs: abs, removelist: make(map[string]*File)}
-	fs.File = *newFile("/", fs, true)
+	fs = &Fs{root: root, abs: abs, removeList: make(removeList)}
+	fs.Descriptor = *newDescriptor("/", fs, true)
 	return
 }
 
@@ -574,12 +702,25 @@ func newFs(root string) (fs *Fs, err error) {
 // No actions are executed on the resulting Fs.
 func At(root string) (*Fs, error) { return newFs(root) }
 
+// Parse parses a root directory and returns a Fs reflecting its'
+// subdirectory structure or an error if one occured.
+func Parse(root string) (*Fs, error) {
+	p, err := newFs(root)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.Parse(); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
 // copyFileRecursive recursively copies from from to to.
-func copyFileRecursive(from, to *File) {
-	for name, file := range from.files {
-		var nf *File
-		if file.IsDir() {
-			nf, _ = to.NewDir(name)
+func copyFileRecursive(from, to *Descriptor) {
+	for name, file := range from.descriptorMap {
+		var nf *Descriptor
+		if file.IsDirectory() {
+			nf, _ = to.NewDirectory(name)
 		} else {
 			nf, _ = to.NewFile(name)
 		}
@@ -596,19 +737,6 @@ func From(fs *Fs, root string) (*Fs, error) {
 	if err != nil {
 		return nil, err
 	}
-	copyFileRecursive(&fs.File, &newfs.File)
+	copyFileRecursive(&fs.Descriptor, &newfs.Descriptor)
 	return fs, nil
-}
-
-// Parse parses a root directory and returns a Fs reflecting its'
-// subdirectory structure or an error if one occured.
-func Parse(root string) (*Fs, error) {
-	p, err := newFs(root)
-	if err != nil {
-		return nil, err
-	}
-	if err := p.Parse(); err != nil {
-		return nil, err
-	}
-	return p, nil
 }

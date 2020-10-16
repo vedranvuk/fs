@@ -76,18 +76,6 @@ func (f *File) Parent() *File {
 	return nil
 }
 
-// IsDir returns if this file is marked as a directory.
-func (f *File) IsDir() bool { return f.dir }
-
-// GetMeta returns user set meta information by specified key.s
-func (f *File) GetMeta(key string) interface{} { return f.meta[key] }
-
-// SetMeta sets user meta information val under specified key.
-func (f *File) SetMeta(key string, val interface{}) { f.meta[key] = val }
-
-// Count returns child item count.
-func (f *File) Count() int { return len(f.files) }
-
 // Fs returns the Fs this File belongs to.
 func (f *File) Fs() *Fs {
 	curr := f.parent
@@ -101,6 +89,74 @@ func (f *File) Fs() *Fs {
 			panic("bug")
 		}
 	}
+}
+
+// IsDir returns if this file is marked as a directory.
+func (f *File) IsDir() bool { return f.dir }
+
+// GetMeta returns user set meta information by specified key.s
+func (f *File) GetMeta(key string) interface{} { return f.meta[key] }
+
+// SetMeta sets user meta information val under specified key.
+func (f *File) SetMeta(key string, val interface{}) { f.meta[key] = val }
+
+// Count returns child item count.
+func (f *File) Count() int { return len(f.files) }
+
+// Files returns files contained by this file if it is a directory.
+// Otherwise, always returns an empty slice.
+func (f *File) Files() []*File {
+	res := make([]*File, 0, len(f.files))
+	for _, file := range f.files {
+		if !file.IsDir() {
+			res = append(res, file)
+		}
+	}
+	sort.Slice(res, func(i, j int) bool {
+		return res[i].Name() < res[j].Name()
+	})
+	return res
+}
+
+// FileNames returns names of files contained by this file if it is a directory.
+// Otherwise, always returns an empty slice.
+func (f *File) FileNames() []string {
+	res := make([]string, 0, len(f.files))
+	for _, file := range f.files {
+		if !file.IsDir() {
+			res = append(res, file.Name())
+		}
+	}
+	sort.Strings(res)
+	return res
+}
+
+// Dirs returns directories contained by this file if it is a directory.
+// Otherwise, always returns an empty slice.
+func (f *File) Dirs() []*File {
+	res := make([]*File, 0, len(f.files))
+	for _, file := range f.files {
+		if file.IsDir() {
+			res = append(res, file)
+		}
+	}
+	sort.Slice(res, func(i, j int) bool {
+		return res[i].Name() < res[j].Name()
+	})
+	return res
+}
+
+// DirNames returns names of dirs contained by this file if it is a directory.
+// Otherwise, always returns an empty slice.
+func (f *File) DirNames() []string {
+	res := make([]string, 0, len(f.files))
+	for _, file := range f.files {
+		if file.IsDir() {
+			res = append(res, file.Name())
+		}
+	}
+	sort.Strings(res)
+	return res
 }
 
 // children is the implementation of Children.
@@ -426,6 +482,7 @@ func (fs *Fs) Parse() error {
 	return fs.parse(&fs.File, fs.abs)
 }
 
+// indentString builds an indent string for printFiles.
 func indentString(depth int) string {
 	b := make([]byte, 0, depth)
 	for i := 0; i < depth; i++ {
@@ -434,7 +491,8 @@ func indentString(depth int) string {
 	return string(b)
 }
 
-func printFiles(f files, indent int) (result string) {
+// filesString returns files as string.
+func filesString(f files, indent int) (result string) {
 
 	names := make([]string, 0, len(f))
 	for name := range f {
@@ -446,7 +504,7 @@ func printFiles(f files, indent int) (result string) {
 		result += fmt.Sprintf("%s %s\n", indentString(indent), f[name].Name())
 		if len(f[name].files) > 0 {
 			indent++
-			result += printFiles(f[name].files, indent)
+			result += filesString(f[name].files, indent)
 			indent--
 		}
 	}
@@ -454,7 +512,7 @@ func printFiles(f files, indent int) (result string) {
 }
 
 // String implements Stringer.
-func (fs *Fs) String() string { return printFiles(fs.files, 0) }
+func (fs *Fs) String() string { return filesString(fs.files, 0) }
 
 // Flush commits current Fs structure to disk or returns an error if one
 // occurs. It creates all directories along the path to touched files.

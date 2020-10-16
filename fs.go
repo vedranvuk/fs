@@ -13,32 +13,32 @@ import (
 )
 
 var (
-	// ErrDirNotEmpty is returned when a Directory Descriptor that contains
-	// children is being removed and a recursive operation was not requested.
-	ErrDirNotEmpty = errors.New("fs: cannot remove directory descriptor, contains children")
+	// ErrExists is returned when a Descriptor with specified name already exists.
+	ErrExists = errors.New("fs: descriptor exists")
+	// ErrInvalidName is returned when an invalid or empty name is specified.
+	ErrInvalidName = errors.New("fs: invalid name")
 	// ErrInvalidPath is returned when an invalid path is specified.
 	// Invalid path in fs is a path that specifies an element in a path
 	// that is a File instead of a Directory.
 	ErrInvalidPath = errors.New("fs: invalid path")
-	// ErrRootParentTraversal is returned whan specifying a path towards the
-	// parent directory of a Fs root.
-	ErrRootParentTraversal = errors.New("fs: traversing to root parent")
-	// ErrExists is returned when a Descriptor with the same name already exists.
-	ErrExists = errors.New("fs: descriptor exists")
+	// ErrDirNotEmpty is returned when a Directory Descriptor that contains
+	// children is being removed and a recursive operation was not requested.
+	ErrDirNotEmpty = errors.New("fs: cannot remove directory descriptor, contains children")
 	// ErrParentNotDir is returned when a child file is being added to a file
 	// that is not a directory.
 	ErrParentNotDir = errors.New("fs: parent is not a directory")
-	// ErrInvalidName is returned when an invalid or empty name is specified.
-	ErrInvalidName = errors.New("fs: invalid name")
+	// ErrOpenDirectory is returned when calling Open on a directory.
+	ErrOpenDirectory = errors.New("fs: cannot open a directory")
+	// ErrRootNotSet is returned by Parse() if root is not set.
+	ErrRootNotSet = errors.New("fs: root not set")
+	// ErrRootParentTraversal is returned whan specifying a path towards the
+	// parent directory of a Fs root.
+	ErrRootParentTraversal = errors.New("fs: traversing to root parent")
 	// ErrIncompatibleStructure is returned when mirroring a file to a different Fs
 	// that already has a structure which is incompatible with source Fs structure.
 	// Usually, this occurs when a target contains a same named file as its source
 	// directory so target file cannot contain children.
 	ErrIncompatibleStructure = errors.New("fs: target fs structure not compatible")
-	// ErrFileIsDirectory is returned when calling Open on a directory.
-	ErrFileIsDirectory = errors.New("fs: file is a directory")
-	// ErrRootNotSet is returned by Parse() if root is not set.
-	ErrRootNotSet = errors.New("fs: root not set")
 )
 
 // descriptorMap is a map of descriptor names to descriptor instances.
@@ -70,6 +70,9 @@ func (dm descriptorMap) len() int { return len(dm) }
 // the specified name is empty or invalid because it contains reserved or
 // invalid characters.
 func validateDescriptorName(name string) error {
+	if name == "" || name == "//" {
+		return ErrInvalidName
+	}
 	return nil
 }
 
@@ -210,6 +213,11 @@ func leftPathElem(s string) (dir, rest string) {
 // Descriptor that caused the error.
 func (d *Descriptor) Get(name string, directory bool) (*Descriptor, error) {
 
+	// Special case for Fs root.
+	if name == "//" {
+		return &d.Fs().Descriptor, nil
+	}
+
 	if err := validateDescriptorName(name); err != nil {
 		return nil, ErrInvalidName
 	}
@@ -227,7 +235,7 @@ func (d *Descriptor) Get(name string, directory bool) (*Descriptor, error) {
 	// Handle dot-names.
 	switch dir {
 	case ".":
-		return d.Get(rest, directory)
+		return d, nil
 	case "..":
 		if parent := d.Parent(); parent != nil {
 			return parent.Get(rest, directory)
@@ -435,8 +443,12 @@ func (d *Descriptor) Delete(recursive bool) error {
 		}
 		fs.delete(d.name)
 	}
+
+	d.Walk(func(desc *Descriptor) bool {
+		d.Fs().removeList[desc.Path(false)] = desc
+		return true
+	}, true)
 	d.Fs().removeList[d.Path(false)] = d
-	// TODO Fill removelist with child items.
 	return nil
 }
 
@@ -501,12 +513,14 @@ type ReadWriteSeekCloser interface {
 // Open opens an underlying Descriptor in read/write mode if it is a File.
 // If the File does not yet exist on disk it is created.
 // If truncate is specified, File is cleared on open.
-// If an error occurs it is returned.
+//
+// Returns ErrOpenDirectory if Descriptor is a Directory or any other error
+// if it occurs.
 //
 // Caller is responsible for closing the returned ReadWriteSeekCloser.
 func (d *Descriptor) Open(truncate bool) (ReadWriteSeekCloser, error) {
 	if d.IsDirectory() {
-		return nil, ErrFileIsDirectory
+		return nil, ErrOpenDirectory
 	}
 	flags := os.O_CREATE | os.O_RDWR
 	if truncate {
@@ -669,17 +683,21 @@ func (fs *Fs) Flush(overwrite, remove bool) (err error) {
 	}
 
 	if remove {
-		flist := make([]string, 0, len(fs.removeList))
-		for key := range fs.removeList {
-			flist = append(flist, key)
+
+		type pair struct {
+			path string
+			desc *Descriptor
 		}
-		sort.Strings(flist)
-		for _, relpath := range flist {
-			path := filepath.Join(fs.abs, relpath)
-			if err := os.RemoveAll(path); err != nil {
-				if !errors.Is(err, os.ErrNotExist) {
-					return err
-				}
+		list := make([]*pair, 0, len(fs.removeList))
+		for key, val := range fs.removeList {
+			list = append(list, &pair{key, val})
+		}
+		sort.Slice(list, func(i, j int) bool {
+			return list[i].path < list[j].path
+		})
+		for i := len(list) - 1; i >= 0; i-- {
+			if err := os.Remove(filepath.Join(fs.abs, list[i].path)); err != nil {
+				return err
 			}
 		}
 	}

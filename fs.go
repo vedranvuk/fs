@@ -452,37 +452,34 @@ func (d *Descriptor) Delete(recursive bool) error {
 	return nil
 }
 
-// Mirror mirrors the Descriptor to a target Fs at the same relative path.
+// From mirrors a Descriptor from specified source Fs to a Descriptor in this
+// Fs at the same relative path.
 //
-// If Descriptor is a Directory the directory is created in the target Fs. If
-// it has children and children is true, they are copied as well. If Descriptor
-// is a File it is copied to target. In all cases, directories along the path
-// to the Descriptor are created in the target Fs.
+// If copy is specified copies the underlying files of the source Fs to this Fs.
+// (This is pšotentially a VERY long operation.)
+// If overwrite is specified silently overwrites existing files in this Fs.
+// If recursive is specified it recursively copies Descriptors from source.
 //
-// If the target Fs has an existing structure that differs from the source in
-// that the target has existing Descriptors coresponding to paths of Descriptors
-// being mirrored but are of different type (i.e. File vs Directory) an
-// ErrIncompatibleStructure is returned.
-//
-// If any other error occurs it is returned.
-func (d *Descriptor) Mirror(target *Fs, overwrite, children bool) error {
+// If an error occurs it is returned. If the operation fails mid-flight there
+// may be files left over from an unfinished operation.
+func (d *Descriptor) From(source *Fs, copy, overwrite, recursive bool) error {
 
-	tgtfile, err := target.Get(d.Path(false), d.IsDirectory())
+	srcfile, err := source.Get(d.Path(false), d.IsDirectory())
 	if err != nil {
 		return err
 	}
-	if err := tgtfile.Touch(overwrite); err != nil {
+	if err := d.Touch(overwrite); err != nil {
 		return err
 	}
 
-	if !d.IsDirectory() {
-		infile, err := os.OpenFile(d.Path(true), os.O_RDONLY, os.ModePerm)
+	if copy && !srcfile.IsDirectory() {
+		infile, err := os.OpenFile(srcfile.Path(true), os.O_RDONLY, os.ModePerm)
 		if err != nil {
 			return err
 		}
 		defer infile.Close()
 
-		outfile, err := os.OpenFile(tgtfile.Path(true), os.O_WRONLY|os.O_TRUNC, 0644)
+		outfile, err := os.OpenFile(d.Path(true), os.O_WRONLY|os.O_TRUNC, 0644)
 		if err != nil {
 			return err
 		}
@@ -493,9 +490,13 @@ func (d *Descriptor) Mirror(target *Fs, overwrite, children bool) error {
 		}
 	}
 
-	if children {
-		for _, file := range d.descriptorMap {
-			if err := file.Mirror(target, overwrite, children); err != nil {
+	if recursive {
+		for _, file := range srcfile.descriptorMap {
+			newfile, err := d.Get(file.Path(false), file.IsDirectory())
+			if err != nil {
+				return err
+			}
+			if err := newfile.From(source, copy, overwrite, recursive); err != nil {
 				return err
 			}
 		}
@@ -733,28 +734,17 @@ func Parse(root string) (*Fs, error) {
 	return p, nil
 }
 
-// copyFileRecursive recursively copies from from to to.
-func copyFileRecursive(from, to *Descriptor) {
-	for name, file := range from.descriptorMap {
-		var nf *Descriptor
-		if file.IsDirectory() {
-			nf, _ = to.NewDirectory(name)
-		} else {
-			nf, _ = to.NewFile(name)
-		}
-		if file.Count() > 0 {
-			copyFileRecursive(file, nf)
-		}
-	}
-}
-
 // From returns a new Fs instance rooted at specified root and having
-// the structure of specified fs.
-func From(fs *Fs, root string) (*Fs, error) {
-	newfs, err := At(root)
+// the structure of specified source fs. If an error occurs returns a nil Fs
+// and an error.
+// See Descriptor.From for details on other parameters.
+func From(root string, source *Fs, copy, overwrite, recursive bool) (*Fs, error) {
+	p, err := At(root)
 	if err != nil {
 		return nil, err
 	}
-	copyFileRecursive(&fs.Descriptor, &newfs.Descriptor)
-	return fs, nil
+	if err := p.From(source, copy, overwrite, recursive); err != nil {
+		return nil, err
+	}
+	return p, nil
 }

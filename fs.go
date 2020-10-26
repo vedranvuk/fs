@@ -247,7 +247,7 @@ func (d *Descriptor) Get(name string, directory bool) (*Descriptor, error) {
 		return d, ErrInvalidPath
 	}
 
-	desc, _ := d.get(dir, d, rest != "")
+	desc, _ := d.get(dir, d, rest != "" && directory)
 	if rest != "" {
 		return desc.Get(rest, directory)
 	}

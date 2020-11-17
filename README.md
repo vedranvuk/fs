@@ -1,7 +1,7 @@
 # fs
 
-Package fs implements a filesystem helper.
+Transitional package for upcomming `io/fs` from `go1.16`.
 
-## Status
+## license
 
-~~Brainstorming.~~ Nothing will become of this. Leaving it up for a short time then it's gone.
+BSD. See LICENSE file.

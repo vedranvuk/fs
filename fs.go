@@ -8,7 +8,7 @@
 package fs
 
 import (
-	"errors"
+	"internal/oserror"
 	"time"
 )
 
@@ -135,11 +135,11 @@ var (
 	ErrClosed     = errClosed()     // "file already closed"
 )
 
-func errInvalid() error    { return errors.New("invalid argument") }
-func errPermission() error { return errors.New("permission denied") }
-func errExist() error      { return errors.New("file already exists") }
-func errNotExist() error   { return errors.New("file does not exist") }
-func errClosed() error     { return errors.New("file already closed") }
+func errInvalid() error    { return oserror.ErrInvalid }
+func errPermission() error { return oserror.ErrPermission }
+func errExist() error      { return oserror.ErrExist }
+func errNotExist() error   { return oserror.ErrNotExist }
+func errClosed() error     { return oserror.ErrClosed }
 
 // A FileInfo describes a file and is returned by Stat.
 type FileInfo interface {

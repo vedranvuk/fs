@@ -8,7 +8,7 @@
 package fs
 
 import (
-	"errors"
+	"os"
 	"time"
 )
 
@@ -16,8 +16,7 @@ import (
 //
 // The FS interface is the minimum implementation required of the file system.
 // A file system may implement additional interfaces,
-// such as fsutil.ReadFileFS, to provide additional or optimized functionality.
-// See io/fsutil for details.
+// such as ReadFileFS, to provide additional or optimized functionality.
 type FS interface {
 	// Open opens the named file.
 	//
@@ -135,11 +134,11 @@ var (
 	ErrClosed     = errClosed()     // "file already closed"
 )
 
-func errInvalid() error    { return errors.New("invalid argument") }
-func errPermission() error { return errors.New("permission denied") }
-func errExist() error      { return errors.New("file already exists") }
-func errNotExist() error   { return errors.New("file does not exist") }
-func errClosed() error     { return errors.New("file already closed") }
+func errInvalid() error    { return os.ErrInvalid }
+func errPermission() error { return os.ErrPermission }
+func errExist() error      { return os.ErrExist }
+func errNotExist() error   { return os.ErrNotExist }
+func errClosed() error     { return os.ErrClosed }
 
 // A FileInfo describes a file and is returned by Stat.
 type FileInfo interface {
